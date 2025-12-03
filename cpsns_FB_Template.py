@@ -18,8 +18,6 @@ PUBLIC_CONFIG_FILE_DEFAULT = "public_config.json"   # this file can be located i
 bReading = False
 bWriting = False
 
-jobs = {}
-
 # Replaces the subtopics of the topic by the strings in the list
 def replace_subtopics(topic, replacements):
     subtopics = topic.split('/')
@@ -46,7 +44,6 @@ def on_subscribe(self, mqttc_in, userdata, msg):
 
 def on_message(client, userdata, msg):
     global bReading, bWriting
-    global jobs
 
     print(f"Topic: {msg.topic}\nPayload:\n{msg.payload}")
 
@@ -54,178 +51,15 @@ def on_message(client, userdata, msg):
         time.sleep(0.01) # make the thread sleep
     bWriting = True
 
-    # Generate a "job" and add it to the jobs
-    job = {"State": "New", "Topic": msg.topic, "Payload": msg.payload}
-    jobs[uuid.uuid4()] = job
+    # do something...
 
     bWriting = False
 
-# Case specific functions:
-def replace_result_in_UCI_file(filename, str_guid):
-    """
-    Replaces the word 'result' in the line that contains 'GO SPREADSHEET FILE =' with a new word.
-    Args:
-        filename (str): Path to the text file.
-        str_guid (str): The word to replace 'result' with.
-    """
-    updated_lines = []
-
-    with open(filename, 'r') as file:
-        for line in file:
-            if "GO SPREADSHEET FILE =" in line:
-                # Split at the equals sign and reconstruct
-                parts = line.split('=')
-                if len(parts) == 2:
-                    line = parts[0] + '= ' + str_guid + '\n'
-            updated_lines.append(line)
-
-    with open(filename, 'w') as file:
-        file.writelines(updated_lines)
-
-def replace_entry_in_UCI_file(input_file, output_file, new_filename):
-    """
-    Replaces the file name in the last 'READ PERMAS FILE =' line with a new file name.
-
-    Parameters:
-        input_file (str): Path to the input text file.
-        output_file (str): Path to write the updated file.
-        new_filename (str): New file name to insert in the last matching line.
-    """
-    target_prefix = "    READ PERMAS FILE = "
-    
-    with open(input_file, "r") as f:
-        lines = f.readlines()
-    
-    # Find index of the last matching line
-    last_index = -1
-    for i, line in enumerate(lines):
-        if line.startswith(target_prefix):
-            last_index = i
-    
-    # Replace if found
-    if last_index != -1:
-        lines[last_index] = f"{target_prefix}{new_filename}\n"
-
-    # Write updated lines to the output file
-    with open(output_file, "w") as f:
-        f.writelines(lines)
-
-def replace_in_OMADAT_file(input_file, output_file, new_values):
-    """
-    Replaces the values after '& 0.33333' in the first N matching lines of a file.
-
-    Parameters:
-        input_file (str): Path to the input file.
-        output_file (str): Path to save the modified file.
-        new_values (list of float): Values to replace the existing ones.
-    """
-    pattern = re.compile(r'^(\s*&\s*0\.33333\s+)([0-9.+\-Ee]+)')
-    replacements = [f"{v:.6E}" for v in new_values]
-
-    with open(input_file, "r") as f:
-        lines = f.readlines()
-
-    updated_lines = []
-    match_count = 0
-
-    for line in lines:
-        match = pattern.match(line)
-        if match and match_count < len(replacements):
-            prefix = match.group(1)
-            new_line = prefix + replacements[match_count] + "\n"
-            updated_lines.append(new_line)
-            match_count += 1
-        else:
-            updated_lines.append(line)
-
-    with open(output_file, "w") as f:
-        f.writelines(updated_lines)
-
-def StartExecution(guid, payload):
-    global json_config_public
-    byte_string = payload
-    strr = byte_string.decode('utf-8')
-    data = json.loads(strr)
-    f1 = data["f1"]
-    f2 = data["f2"]
-    f3 = data["f3"]
-
-    # opt DAT file
-    strOPTDATname = str(guid)+"_opt.dat"
-    #strCommand = "cp oma_opt_with_tipmass.dat " + strOPTDATname
-    strCommand = "cp " + json_config_public["PERMAS"]["dat_3"] + " " + strOPTDATname
-    os.system(strCommand)
-    replace_in_OMADAT_file(input_file=strOPTDATname, output_file=strOPTDATname, new_values=[f1, f2, f3])
-
-    # UCI file 
-    # Replace in the "RESULT" section
-    strUCIname = str(guid)+".uci"
-    #strCommand = "cp beam_opt_with_tipmass.uci " + strUCIname
-    strCommand = "cp " + json_config_public["PERMAS"]["uci"] + " " + strUCIname
-    os.system(strCommand)
-    replace_result_in_UCI_file(strUCIname, str(guid))
-    # Replace in the "READ PERMAS FILE" section
-    replace_entry_in_UCI_file(strUCIname, strUCIname, strOPTDATname)
-
-    #strCommand = "permasEDU " + strUCIname + " 1> /dev/null &" # run silently
-    strCommand = "permasEDU " + strUCIname # ren verbously
-    os.system(strCommand)
-
-def ReadDesignVariables(filename):
-    xd = np.genfromtxt(filename, delimiter=';', dtype=np.float64, skip_header=1)
-    return xd[-1, 1], xd[-1, 2], 1.e6 * xd[-1, 3], int(xd[-1, 0])
-
-def CleanupFiles(guid):
-    # Remove the files
-    strFiles = str(guid) + "*.*"
-    strCommand = "rm -f " + strFiles
-    os.system(strCommand)
-
-# Here: all three frequencies must present and not be NaN
-def IsJobValid(payload):
-    """
-    Checks if the given job is valid.   
-    Args:
-        job -- tuple
-    Returns:
-        bValid (bool): True if the job is valid, False otherwise
-        strReason (str): Explanation if invalid, or "Valid" if it's fine
-    """
-    # convert the payload to JSON
-    try:
-        byte_string = payload
-        strr = byte_string.decode('utf-8')
-        data = json.loads(strr)
-    except Exception as e:
-        return False, repr(e)
-
-    try:
-        f1 = data["f1"]
-    except Exception as e:
-        return False, "'f1' is not found"
-    try:
-        f2 = data["f2"]
-    except Exception as e:
-        return False, "'f2' is not found"
-    try:
-        f3 = data["f3"]
-    except Exception as e:
-        return False, "'f3' is not found"
-    
-    if math.isnan(f1):
-        return False, "'f1' is NaN"
-    if math.isnan(f2):
-        return False, "'f2' is NaN"
-    if math.isnan(f3):
-        return False, "'f3' is NaN"
-
-    return True, "Valid"
 
 
 def main():
     global json_config_private, json_config_public
     global bReading, bWriting
-    global jobs
 
     # Parse command line parameters
     # Create the parser
@@ -306,65 +140,7 @@ def main():
             time.sleep(0.01) # make the thread sleep
         bReading = True
 
-        # Check the jobs the jobs
-        for key, value in jobs.items():
-            if value["State"] == "New":
-                print(f"New job found. Topic = {value['Topic']}")
-                bValid, strReason = IsJobValid(value["Payload"])
-                if bValid:
-                    print('Job is valid. Start the execution...')
-                    value["State"] = "Valid"
-                else:
-                    print(f'Job is invalid. Reason: {strReason}')
-                    value["State"] = "Invalid"
-
-                if value["State"] == "Valid":
-                    # Execute
-                    StartExecution(key, value["Payload"])
-                    value["State"] = "Executing"
-                    print(f"Execution started in background. GUID: {key}")
-                else:
-                    # Delete
-                    print(f"The job from {value['Topic']} is deleted.")
-
-            if value["State"] == "Executing":
-                # check if the corresponding XDHIS.CSV is ready
-                xdhisName = str(key) + "_xdhis.csv" 
-                if os.path.isfile(xdhisName):
-                    value["State"] = "Finished"
-                else:
-                    continue
-            
-            if value["State"] == "Finished":
-                xdhisName = str(key) + "_xdhis.csv" 
-                dl, kRot, m, iter = ReadDesignVariables(xdhisName)
-                print(f"After {iter} iterations, the tip mass is estimated to {m} gr, dl= {dl} mm, kRot = {kRot} N/m")
-                # Publish the result
-                # Replace the topic
-                newTopic = replace_subtopics(value["Topic"], json_config_public["Output"]["ModifySubtopics"])
-                # Compose the payload
-                byte_string = value["Payload"]
-                strr = byte_string.decode('utf-8')
-                data = json.loads(strr)
-                utcTimeAsString = data["UTC_TimeStamp"]
-                newPayload = json.dumps({"UTC_TimeStamp": utcTimeAsString, "m": m, "dl": dl, "kRot": kRot})
-                print(f"Publishing the result to {newTopic}...")
-                mqttc_out.publish(newTopic, newPayload, qos=json_config_private["MQTT_OUT"]["QoS"])
-                print(f"Result published to {newTopic}.")
-                # Clean up
-                CleanupFiles(key)
-                print(f"Files cleaned up for job {key}.")
-
-        # Clean up the jobs dictionary
-        for key in list(jobs.keys()):
-            if jobs[key]["State"] == "Finished":
-                del jobs[key]
-                print(f"Finished job {key} is deleted.")
-                continue
-            if jobs[key]["State"] == "Invalid":
-                del jobs[key]
-                print(f"Invalid job {key} is deleted.")
-                continue
+        # Do something 
 
         bReading = False
 
